@@ -171,9 +171,10 @@ export default class MainGame extends Phaser.Scene {
         this.physics.add.overlap(this.enemyBullets, this.player.sprite, this.enemyBulletHitPlayer, null, this);
         this.physics.add.overlap(this.enemies, this.player.sprite, () => this.player.takeDamage(1), null, this);
 
-        // Zoom
+        // Zoom Setup
         this.currentZoomIndex = 0;
-        this.uiZoomLevels = [1, 2, 4]; // 1x, 2x, 4x of base
+        this.uiZoomLevels = [1];
+        this.lastActiveWeapon = 'pistol';
         this.updateBaseZoom();
         this.applyCurrentZoom();
 
@@ -260,6 +261,9 @@ export default class MainGame extends Phaser.Scene {
         }
 
         // Visual death effect (briefly see pieces before fade)
+        if (this.player.visual && this.player.visual.explode) {
+            this.player.visual.explode();
+        }
         this.time.delayedCall(1300, () => this.cameras.main.fadeOut(500, 0, 0, 0));
 
         this.time.delayedCall(2300, () => {
@@ -319,11 +323,43 @@ export default class MainGame extends Phaser.Scene {
     }
 
     toggleZoom() {
+        if (this.uiZoomLevels.length <= 1) return; // 1x only weapons do nothing
+        
         this.currentZoomIndex++;
         if (this.currentZoomIndex >= this.uiZoomLevels.length) this.currentZoomIndex = 0;
         const uiLabel = this.uiZoomLevels[this.currentZoomIndex];
         useGameStore.getState().setZoomLevel(uiLabel);
         this.applyCurrentZoom(false);
+    }
+
+    getZoomLevelsForWeapon(weaponKey) {
+        if (!weaponKey) return [1];
+        const key = weaponKey.toLowerCase();
+        if (['pistol', 'dagger', 'shotgun', 'tacticalshotgun'].includes(key)) {
+            return [1];
+        }
+        if (['smg', 'rifle', 'machinegun'].includes(key)) {
+            return [1, 2];
+        }
+        if (['sniper', 'launcher'].includes(key)) {
+            return [1, 2, 4];
+        }
+        return [1];
+    }
+
+    onWeaponChanged(weaponKey) {
+        const levels = this.getZoomLevelsForWeapon(weaponKey);
+        const currentLevel = this.currentZoomIndex < this.uiZoomLevels.length ? this.uiZoomLevels[this.currentZoomIndex] : 1;
+        this.uiZoomLevels = levels;
+        
+        const newIndex = levels.indexOf(currentLevel);
+        if (newIndex !== -1) {
+            this.currentZoomIndex = newIndex;
+        } else {
+            this.currentZoomIndex = 0; // Reset to 1x
+        }
+        this.applyCurrentZoom(false);
+        useGameStore.getState().setZoomLevel(this.uiZoomLevels[this.currentZoomIndex]);
     }
 
     spawnNewLootAtPoint(point) {
@@ -343,7 +379,8 @@ export default class MainGame extends Phaser.Scene {
         pickup.pointIndex = pointIndex;
 
         if (weaponKey === 'grenade') {
-            pickup.setDisplaySize(33, 33); // Match grenade belt size
+            pickup.setDisplaySize(25, 25);
+            pickup.body.setSize(20, 20);
             pickup.ammo = { count: 3 };
         } else if (weaponKey === 'medkit') {
             pickup.setDisplaySize(75, 40);
@@ -612,7 +649,16 @@ export default class MainGame extends Phaser.Scene {
     }
 
     update(time, delta) {
-        if (this.player) this.player.update(time, delta, this.input.activePointer);
+        if (this.player) {
+            this.player.update(time, delta, this.input.activePointer);
+            
+            // Track weapon change for zoom levels
+            const currentWeapon = this.player.weapons.inventory[this.player.weapons.currentSlot] || 'dagger';
+            if (currentWeapon !== this.lastActiveWeapon) {
+                this.lastActiveWeapon = currentWeapon;
+                this.onWeaponChanged(currentWeapon);
+            }
+        }
         if (this.sarge) this.sarge.update(time, delta, this.enemies, this.initialAILock);
 
         // Update all enemies

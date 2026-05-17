@@ -13,7 +13,7 @@ export default class Player {
         // 2. Create an invisible Physics Sprite for collision (The Hitbox)
         // We use a separate sprite so the container can flip and animate freely
         this.sprite = this.scene.physics.add.sprite(x, y, 'white_square');
-        this.sprite.body.setSize(40, 80);
+        this.sprite.body.setSize(30, 50);
         this.sprite.setVisible(false); // Invisible hitbox
         this.sprite.setCollideWorldBounds(true);
         this.sprite.setDragX(800);
@@ -94,6 +94,9 @@ export default class Player {
         this.handleCombat();
         this.handleHealthRegen(time);
         this.syncUI();
+        if (this.weapons && this.weapons.update) {
+            this.weapons.update(time, delta);
+        }
 
         // Update visual animations & Weapon Color
         const currentWpKey = this.weapons.inventory[this.weapons.currentSlot];
@@ -190,6 +193,7 @@ export default class Player {
             // GRENADE PICKUP
             if (nearest.weaponKey === 'grenade') {
                 this.weapons.grenades += 3;
+                if (this.scene.notifyPickup) this.scene.notifyPickup(nearest.lootId);
                 nearest.destroy();
                 return;
             }
@@ -198,6 +202,7 @@ export default class Player {
             if (nearest.weaponKey === 'medkit') {
                 this.health = 100;
                 this.syncUI();
+                if (this.scene.notifyPickup) this.scene.notifyPickup(nearest.lootId);
                 nearest.destroy();
                 return;
             }
@@ -208,6 +213,7 @@ export default class Player {
             if (duplicateSlot !== -1) {
                 // It's a duplicate! Just add ammo and destroy pickup
                 this.weapons.addWeapon(nearest.weaponKey, nearest.ammo);
+                if (this.scene.notifyPickup) this.scene.notifyPickup(nearest.lootId);
                 nearest.destroy();
                 return;
             }
@@ -216,11 +222,12 @@ export default class Player {
             const currentKey = this.weapons.inventory[this.weapons.currentSlot];
             if (currentKey) {
                 const dropped = this.weapons.dropCurrentWeapon();
-                // Toss the weapon slightly so it doesn't clip (Dropped weapons are temporary)
+                // Pass the actual ammo state of the dropped gun
                 this.scene.spawnWeaponPickup(this.sprite.x, this.sprite.y - 20, dropped.key, dropped.ammo, false);
             }
 
             this.weapons.addWeapon(nearest.weaponKey, nearest.ammo);
+            if (this.scene.notifyPickup) this.scene.notifyPickup(nearest.lootId);
             nearest.destroy();
         }
     }
@@ -237,18 +244,20 @@ export default class Player {
         }
     }
 
-    takeDamage(amount) {
+    takeDamage(amount, attackerId = null) {
         if (this.isRespawning) return;
         if (useGameStore.getState().godMode) return; // God Mode Protection
         
         this.health = Math.max(0, this.health - amount);
         this.syncUI();
         this.lastDamageTime = this.scene.time.now;
+        
+        if (this.scene.cameras && this.scene.cameras.main) {
+            this.scene.cameras.main.shake(100, 0.01);
+        }
 
-        if (this.health <= 0) {
-            this.visual.explode();
-            this.sprite.setActive(false).setVisible(false);
-            this.scene.onPlayerDeath();
+        if (this.health <= 0 && this.scene.onPlayerDeath) {
+            this.scene.onPlayerDeath(attackerId);
         }
     }
 
