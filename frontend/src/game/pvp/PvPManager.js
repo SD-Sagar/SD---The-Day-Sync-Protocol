@@ -22,6 +22,9 @@ class PvPManager {
         this.socket.on('room_updated', (data) => {
             usePvPStore.getState().setPlayers(data.players);
             usePvPStore.getState().setIsHost(this.socket.id === data.hostId);
+            if (data.selectedMatchTime) {
+                usePvPStore.getState().setSelectedMatchTime(data.selectedMatchTime);
+            }
         });
 
         this.socket.on('match_starting', (data) => {
@@ -92,6 +95,9 @@ class PvPManager {
             if (response.success) {
                 usePvPStore.getState().setRoomCode(code);
                 this.currentRoom = code;
+                if (response.reconnect) {
+                    usePvPStore.getState().setIsMatchStarted(true);
+                }
             } else {
                 alert(response.message || "Could not join room");
             }
@@ -99,7 +105,13 @@ class PvPManager {
     }
 
     toggleReady(isReady) {
+        if (!this.currentRoom) return;
         this.socket.emit('set_ready', { code: this.currentRoom, isReady });
+    }
+
+    setMatchTime(timeInMinutes) {
+        if (!this.currentRoom) return;
+        this.socket.emit('set_match_time', { code: this.currentRoom, time: timeInMinutes });
     }
 
     sendPlayerUpdate(data) {

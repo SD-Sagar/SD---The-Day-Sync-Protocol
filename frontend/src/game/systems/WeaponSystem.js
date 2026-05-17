@@ -45,6 +45,8 @@ export default class WeaponSystem {
             classType: Phaser.Physics.Arcade.Image,
             allowGravity: true
         });
+        
+        this.activeGrenades = [];
 
         // Add Platform and Enemy Collision for Grenades
         if (this.scene.platforms) {
@@ -72,6 +74,9 @@ export default class WeaponSystem {
         if (wp.isMelee) {
             this.lastFired = now;
             this.performMelee(targetX, targetY, wp);
+            if (this.onFire) {
+                this.onFire({ targetX, targetY, weapon: this.inventory[this.currentSlot] });
+            }
             return;
         }
 
@@ -146,10 +151,42 @@ export default class WeaponSystem {
                     }
                 }
             });
+        } else if (this.scene.enemies) {
+            // Solo Campaign Melee Damage
+            this.scene.enemies.getChildren().forEach(enemy => {
+                if (!enemy.active) return;
+                const dist = Phaser.Math.Distance.Between(startX, startY, enemy.x, enemy.y);
+                if (dist < wp.range) {
+                    const angleToEnemy = Phaser.Math.Angle.Between(startX, startY, enemy.x, enemy.y);
+                    const diff = Math.abs(Phaser.Math.Angle.Wrap(angle - angleToEnemy));
+                    if (diff < Math.PI / 3) {
+                        if (this.scene.bulletHitEnemy) {
+                            const fakeBullet = { active: true, damage: wp.damage, owner: this.owner, destroy: () => {} };
+                            this.scene.bulletHitEnemy(fakeBullet, enemy);
+                        }
+                    }
+                }
+            });
         }
 
         if (this.onMelee) {
             this.onMelee({ targetX, targetY });
+        }
+    }
+
+    update(time, delta) {
+        if (this.activeGrenades && this.activeGrenades.length > 0) {
+            this.activeGrenades = this.activeGrenades.filter(g => g.active);
+            
+            if (!this.lastGrenadeSyncTime) this.lastGrenadeSyncTime = 0;
+            if (time > this.lastGrenadeSyncTime + 50) {
+                this.lastGrenadeSyncTime = time;
+                this.activeGrenades.forEach(g => {
+                    if (this.scene.onGrenadeSync) {
+                        this.scene.onGrenadeSync({ grenadeId: g.grenadeId, x: g.x, y: g.y });
+                    }
+                });
+            }
         }
     }
 
@@ -207,9 +244,35 @@ export default class WeaponSystem {
         // Damage Enemies (ONLY IF LOCAL EXPLOSION - to prevent loops)
         if (!isNetwork && this.scene.enemies && explosionDamage > 0) {
             this.scene.physics.overlap(blast, this.scene.enemies, (b, enemy) => {
-                const np = Array.from(this.scene.networkPlayers?.values() || []).find(p => p.container === enemy);
-                if (np) {
-                    PvPManager.sendPlayerUpdate({ event: 'hit', targetId: np.id, damage: explosionDamage });
+                if (this.scene.networkPlayers) {
+                    const np = Array.from(this.scene.networkPlayers.values()).find(p => p.container === enemy);
+                    if (np) {
+                        PvPManager.sendPlayerUpdate({ event: 'hit', targetId: np.id, damage: explosionDamage });
+                    }
+                } else {
+                    // Solo campaign AI bot damage!
+                    if (enemy && enemy.active && typeof enemy.health === 'number') {
+                        enemy.health -= explosionDamage;
+                        if (enemy.health <= 0 && !enemy.isDying) {
+                            enemy.isDying = true;
+                            // Only count kills caused by the player
+                            if (this.owner === this.scene.player?.sprite) {
+                                this.scene.kills++;
+                                useGameStore.getState().updateStats(1, this.scene.wave);
+                            }
+                            if (enemy.visual) enemy.visual.explode();
+                            
+                            // Visual pieces scatter
+                            const particles = this.scene.add.particles(enemy.x, enemy.y, 'explosion_part', {
+                                speed: { min: 100, max: 300 },
+                                lifespan: 600,
+                                scale: { start: 1, end: 0 },
+                                quantity: 15
+                            });
+                            this.scene.time.delayedCall(600, () => particles.destroy());
+                            enemy.destroy();
+                        }
+                    }
                 }
             });
         }
@@ -291,9 +354,9 @@ export default class WeaponSystem {
                     const py = this.owner.y + Math.sin(angle) * d;
                     
                     const hitWall = this.scene.platforms?.getTileAtWorldXY(px, py);
-                    const hitEnemy = this.scene.enemies?.getChildren().find(e => e.active && !e.isDying && e.getBounds().contains(px, py));
-                    const hitPlayer = this.scene.player?.sprite.active && this.scene.player.sprite.getBounds().contains(px, py);
-                    const hitSarge = this.scene.sarge?.sprite.active && this.scene.sarge.sprite.getBounds().contains(px, py);
+                    const hitEnemy = this.scene.enemies?.getChildren().find(e => e.active && !e.isDying && e.body && Phaser.Geom.Rectangle.Contains(e.body, px, py));
+                    const hitPlayer = this.scene.player?.sprite.active && this.scene.player.sprite.body && Phaser.Geom.Rectangle.Contains(this.scene.player.sprite.body, px, py);
+                    const hitSarge = this.scene.sarge?.sprite.active && this.scene.sarge.sprite.body && Phaser.Geom.Rectangle.Contains(this.scene.sarge.sprite.body, px, py);
 
                     if (hitWall || hitEnemy || (hitPlayer && this.owner !== this.scene.player.sprite) || (hitSarge && this.owner !== this.scene.sarge.sprite)) {
                         endX = px;
@@ -378,7 +441,10 @@ export default class WeaponSystem {
 
                 // Notify Scene for Network Sync
                 if (this.scene.onGrenade) {
-                    this.scene.onGrenade({ x: grenade.x, y: grenade.y, vx, vy });
+                    const grenadeId = `grenade_${this.owner.id || 'player'}_${Date.now()}`;
+                    grenade.grenadeId = grenadeId;
+                    this.activeGrenades.push(grenade);
+                    this.scene.onGrenade({ grenadeId, x: grenade.x, y: grenade.y, vx, vy });
                 }
             }
 
@@ -386,6 +452,11 @@ export default class WeaponSystem {
             this.scene.time.delayedCall(2500, () => {
                 if (grenade.active) {
                     this.createExplosion(grenade.x, grenade.y, 150, 100, this.owner);
+                    
+                    // Clean up from activeGrenades immediately
+                    if (grenade.grenadeId) {
+                        this.activeGrenades = this.activeGrenades.filter(g => g !== grenade);
+                    }
                     
                     // Proximity Sound for Grenade specifically (optional if already handled by createExplosion)
                     if (this.scene.player && this.scene.player.sprite) {

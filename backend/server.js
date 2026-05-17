@@ -4,6 +4,7 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const { Server } = require('socket.io');
 const http = require('http');
+const path = require('path');
 
 dotenv.config();
 
@@ -33,8 +34,22 @@ mongoose.connect(process.env.MONGODB_URI).then(() => {
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/score', require('./routes/score'));
 
-app.get('/', (req, res) => {
-    res.send('SD-Combat Backend with Sockets is running');
+// Serve static frontend assets if built
+const frontendDistPath = path.join(__dirname, '../frontend/dist');
+app.use(express.static(frontendDistPath));
+
+// Fallback index.html for React routing
+app.get('*', (req, res, next) => {
+    // Skip API or WebSocket requests
+    if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) {
+        return next();
+    }
+    // Serve index.html if frontend is compiled, otherwise fallback to basic string
+    res.sendFile(path.join(frontendDistPath, 'index.html'), (err) => {
+        if (err) {
+            res.send('SD-Combat Backend with Sockets is running. (Frontend is not compiled yet)');
+        }
+    });
 });
 
 // --- PVP SOCKET LOGIC ---
@@ -64,7 +79,8 @@ io.on('connection', (socket) => {
             players: [player],
             hostId: socket.id,
             status: 'lobby',
-            countdown: 0
+            countdown: 0,
+            selectedMatchTime: 300
         });
 
         socket.join(code);
@@ -76,7 +92,23 @@ io.on('connection', (socket) => {
     socket.on('join_room', (data, callback) => {
         const room = rooms.get(data.code);
         if (!room) return callback({ success: false, message: 'Room not found' });
-        if (room.status !== 'lobby') return callback({ success: false, message: 'Match in progress' });
+        
+        // Reconnect Logic
+        if (room.status === 'in_game') {
+            const disconnectedPlayer = room.players.find(p => p.name === data.name && p.disconnected);
+            if (disconnectedPlayer) {
+                disconnectedPlayer.id = socket.id;
+                disconnectedPlayer.disconnected = false;
+                disconnectedPlayer.appearance = data.appearance; // Update appearance just in case
+                socket.join(data.code);
+                console.log(`[PvP] ${data.name} reconnected to room ${data.code}`);
+                callback({ success: true, reconnect: true });
+                emitRoomUpdate(data.code);
+                return;
+            }
+            return callback({ success: false, message: 'Match in progress' });
+        }
+
         if (room.players.length >= 8) return callback({ success: false, message: 'Room full' });
 
         const player = { id: socket.id, name: data.name, appearance: data.appearance, isReady: false };
@@ -100,8 +132,11 @@ io.on('connection', (socket) => {
         if (data.event === 'kill') {
             const room = rooms.get(data.code);
             if (room && room.scores) {
-                if (room.scores[data.killerId]) room.scores[data.killerId].kills++;
-                if (room.scores[data.victimId]) room.scores[data.victimId].deaths++;
+                const killer = room.players.find(p => p.id === data.killerId);
+                const victim = room.players.find(p => p.id === data.victimId);
+                
+                if (killer && room.scores[killer.name]) room.scores[killer.name].kills++;
+                if (victim && room.scores[victim.name]) room.scores[victim.name].deaths++;
                 
                 io.to(data.code).emit('leaderboard_update', room.scores);
                 console.log(`[PvP] ${data.killerId} killed ${data.victimId} in room ${data.code}`);
@@ -141,21 +176,45 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('set_match_time', (data) => {
+        const room = rooms.get(data.code);
+        if (!room || room.hostId !== socket.id) return;
+        if (room.status !== 'lobby') return;
+        
+        room.selectedMatchTime = data.time * 60; // minutes to seconds
+        emitRoomUpdate(data.code);
+    });
+
     socket.on('disconnect', () => {
         rooms.forEach((room, code) => {
             const playerIndex = room.players.findIndex(p => p.id === socket.id);
             if (playerIndex !== -1) {
-                room.players.splice(playerIndex, 1);
-                
-                if (room.players.length === 0) {
-                    if (room.timer) clearInterval(room.timer);
-                    rooms.delete(code);
-                } else {
-                    if (room.hostId === socket.id) {
-                        room.hostId = room.players[0].id;
+                if (room.status === 'in_game') {
+                    // Mid-Match: Keep as dummy
+                    room.players[playerIndex].disconnected = true;
+                    console.log(`[PvP] ${room.players[playerIndex].name} disconnected mid-match (Dummy enabled)`);
+                    
+                    // If everyone is disconnected, close the room
+                    if (room.players.every(p => p.disconnected)) {
+                        if (room.timer) clearInterval(room.timer);
+                        rooms.delete(code);
+                    } else {
+                        emitRoomUpdate(code);
                     }
-                    emitRoomUpdate(code);
-                    checkLobbyReady(code);
+                } else {
+                    // Lobby: Remove completely
+                    room.players.splice(playerIndex, 1);
+                    
+                    if (room.players.length === 0) {
+                        if (room.timer) clearInterval(room.timer);
+                        rooms.delete(code);
+                    } else {
+                        if (room.hostId === socket.id) {
+                            room.hostId = room.players[0].id;
+                        }
+                        emitRoomUpdate(code);
+                        checkLobbyReady(code);
+                    }
                 }
             }
         });
@@ -171,7 +230,8 @@ function emitRoomUpdate(code) {
         players: room.players,
         hostId: room.hostId,
         status: room.status,
-        countdown: room.countdown
+        countdown: room.countdown,
+        selectedMatchTime: room.selectedMatchTime || 300
     });
 }
 
@@ -192,18 +252,18 @@ function checkLobbyReady(code) {
                 room.timer = null;
                 room.status = 'in_game';
                 
-                // Initialize Scores
+                // Initialize Scores using Name for persistent reconnections
                 room.scores = {};
                 room.players.forEach(p => {
-                    room.scores[p.id] = { name: p.name, kills: 0, deaths: 0 };
+                    room.scores[p.name] = { name: p.name, kills: 0, deaths: 0 };
                 });
 
                 io.to(code).emit('match_starting', {
                     lootManifest: generateLootManifest(100)
                 });
 
-                // Start 5 Minute Match Timer
-                room.matchTime = 300; 
+                // Start Match Timer based on selected time
+                room.matchTime = room.selectedMatchTime || 300; 
                 room.timer = setInterval(() => {
                     if (room.matchTime > 0) {
                         room.matchTime--;

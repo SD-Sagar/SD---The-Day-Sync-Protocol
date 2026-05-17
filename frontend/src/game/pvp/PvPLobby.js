@@ -29,7 +29,7 @@ export default class PvPLobby extends Phaser.Scene {
         this.roomText = this.add.text(width / 2, 100, store.roomCode ? `ROOM CODE: ${store.roomCode}` : 'NOT IN ROOM', { font: '24px monospace', fill: '#fbbf24' }).setOrigin(0.5);
 
         // Buttons Container
-        this.btnContainer = this.add.container(width / 2, height - 150);
+        this.btnContainer = this.add.container(width / 2, height - 120);
 
         if (!store.roomCode) {
             this.createEntryButtons();
@@ -58,6 +58,8 @@ export default class PvPLobby extends Phaser.Scene {
                 this.scene.start('PvPGame');
             }
         });
+
+        this.events.on('shutdown', this.shutdown, this);
 
         // Back Button
         this.add.text(50, 50, '< BACK', { font: 'bold 18px monospace', fill: '#94a3b8' })
@@ -91,11 +93,11 @@ export default class PvPLobby extends Phaser.Scene {
         const me = store.players.find(p => p.id === PvPManager.socket.id);
         const isReady = me?.isReady || false;
 
-        this.readyBtn = this.add.text(0, 0, isReady ? 'READY!' : 'GET READY', { 
+        this.readyBtn = this.add.text(0, -35, isReady ? 'READY!' : 'GET READY', { 
             font: 'bold 24px monospace', 
             fill: '#ffffff', 
             backgroundColor: isReady ? '#10b981' : '#ef4444', 
-            padding: { x: 40, y: 15 } 
+            padding: { x: 40, y: 12 } 
         })
         .setOrigin(0.5)
         .setInteractive({ useHandCursor: true })
@@ -107,12 +109,42 @@ export default class PvPLobby extends Phaser.Scene {
         this.btnContainer.add(this.readyBtn);
 
         // Customize Avatar Button
-        const customizeBtn = this.add.text(0, 80, 'CUSTOMIZE AVATAR', { font: '16px monospace', fill: '#94a3b8' })
+        const customizeBtn = this.add.text(0, 20, 'CUSTOMIZE AVATAR', { font: 'bold 14px monospace', fill: '#94a3b8' })
             .setOrigin(0.5)
             .setInteractive({ useHandCursor: true })
             .on('pointerdown', () => this.scene.start('PvPArmory'));
         
         this.btnContainer.add(customizeBtn);
+
+        // Time Selection / Display
+        const timeY = 60;
+        if (store.isHost) {
+            const timeTitle = this.add.text(0, timeY, 'MATCH TIME:', { font: 'bold 14px monospace', fill: '#fbbf24' }).setOrigin(0.5, 1);
+            const timeContainer = this.add.container(0, timeY + 15);
+            
+            const times = [5, 10, 20, 30];
+            times.forEach((t, index) => {
+                const isSelected = store.selectedMatchTime === t * 60;
+                const btn = this.add.text(-120 + (index * 80), 0, `${t} MIN`, {
+                    font: 'bold 14px monospace',
+                    fill: isSelected ? '#000000' : '#ffffff',
+                    backgroundColor: isSelected ? '#fbbf24' : '#334155',
+                    padding: { x: 10, y: 5 }
+                })
+                .setOrigin(0.5)
+                .setInteractive({ useHandCursor: true })
+                .on('pointerdown', () => {
+                    if (this.countdownValue > 0) return; // Prevent changing during countdown
+                    PvPManager.setMatchTime(t);
+                });
+                timeContainer.add(btn);
+            });
+            this.btnContainer.add([timeTitle, timeContainer]);
+        } else {
+            const displayTime = store.selectedMatchTime / 60;
+            const timeDisplay = this.add.text(0, timeY + 10, `MATCH TIME: ${displayTime} MIN`, { font: 'bold 16px monospace', fill: '#fbbf24' }).setOrigin(0.5);
+            this.btnContainer.add(timeDisplay);
+        }
     }
 
     updatePlayerList() {
@@ -121,7 +153,11 @@ export default class PvPLobby extends Phaser.Scene {
         const store = usePvPStore.getState();
 
         // Clear old sprites
-        this.playerSprites.forEach(p => p.container.destroy());
+        this.playerSprites.forEach(p => {
+            if (p.container) p.container.destroy();
+            if (p.nameText) p.nameText.destroy();
+            if (p.readyStatus) p.readyStatus.destroy();
+        });
         this.playerSprites = [];
 
         const spacing = 180;
@@ -144,8 +180,8 @@ export default class PvPLobby extends Phaser.Scene {
             this.playerSprites.push({ container: visual.container, nameText, readyStatus });
         });
 
-        // If joined a room, ensure lobby buttons are shown
-        if (store.roomCode && this.btnContainer.length <= 2) {
+        // If joined a room, ensure lobby buttons are shown and updated
+        if (store.roomCode) {
             this.createLobbyButtons();
         }
     }
@@ -203,5 +239,8 @@ export default class PvPLobby extends Phaser.Scene {
 
     shutdown() {
         if (this.unsubscribe) this.unsubscribe();
+        if (PvPManager.lobbyScene === this) {
+            PvPManager.lobbyScene = null;
+        }
     }
 }

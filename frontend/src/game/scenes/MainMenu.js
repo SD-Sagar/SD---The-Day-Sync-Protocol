@@ -15,11 +15,28 @@ export default class MainMenu extends Phaser.Scene {
         // Background
         this.add.rectangle(0, 0, width, height, 0x0f172a).setOrigin(0, 0);
         
-        // Title
-        this.add.text(width / 2, 100, 'SD-DAY: SYNC PROTOCOL', {
-            font: 'bold 48px monospace',
-            fill: '#22d3ee'
-        }).setOrigin(0.5);
+        // Title: SD
+        const titleText = this.add.text(width / 2, 70, 'SD', {
+            font: '900 80px monospace',
+            fill: '#ffffff',
+            stroke: '#7c2d12',
+            strokeThickness: 8
+        }).setOrigin(0.5).setStyle({ fontStyle: 'italic' });
+
+        // Add stunning fire-like linear canvas gradient
+        const gradient = titleText.context.createLinearGradient(0, 0, 0, titleText.height);
+        gradient.addColorStop(0, '#dc2626');   // Crimson
+        gradient.addColorStop(0.5, '#f97316'); // Orange
+        gradient.addColorStop(1, '#facc15');   // Yellow Gold
+        titleText.setFill(gradient);
+
+        // Subtitle: THE DAY SYNC PROTOCOL
+        const subText = this.add.text(width / 2, 140, 'THE DAY SYNC PROTOCOL', {
+            font: '900 20px monospace',
+            fill: '#f97316',
+            stroke: '#7c2d12',
+            strokeThickness: 2
+        }).setOrigin(0.5).setStyle({ fontStyle: 'italic' });
 
         const options = [
             { text: 'NEW GAME', action: () => this.startNewGame() },

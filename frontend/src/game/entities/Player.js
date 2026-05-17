@@ -94,6 +94,9 @@ export default class Player {
         this.handleCombat();
         this.handleHealthRegen(time);
         this.syncUI();
+        if (this.weapons && this.weapons.update) {
+            this.weapons.update(time, delta);
+        }
 
         // Update visual animations & Weapon Color
         const currentWpKey = this.weapons.inventory[this.weapons.currentSlot];
@@ -241,18 +244,20 @@ export default class Player {
         }
     }
 
-    takeDamage(amount) {
+    takeDamage(amount, attackerId = null) {
         if (this.isRespawning) return;
         if (useGameStore.getState().godMode) return; // God Mode Protection
         
         this.health = Math.max(0, this.health - amount);
         this.syncUI();
         this.lastDamageTime = this.scene.time.now;
+        
+        if (this.scene.cameras && this.scene.cameras.main) {
+            this.scene.cameras.main.shake(100, 0.01);
+        }
 
-        if (this.health <= 0) {
-            this.visual.explode();
-            this.sprite.setActive(false).setVisible(false);
-            this.scene.onPlayerDeath();
+        if (this.health <= 0 && this.scene.onPlayerDeath) {
+            this.scene.onPlayerDeath(attackerId);
         }
     }
 

@@ -15,6 +15,16 @@ export default class PvPGame extends Phaser.Scene {
         const pvpStore = usePvPStore.getState();
         const store = useGameStore.getState();
 
+        // Generate placeholder textures (For particles, jetpack, and blood)
+        const g = this.make.graphics({ x: 0, y: 0, add: false });
+        g.fillStyle(0xFFFF00); g.fillRect(0, 0, 8, 8); g.generateTexture('bullet_player', 8, 8);
+        g.clear();
+        g.fillStyle(0xFF4400); g.fillRect(0, 0, 8, 8); g.generateTexture('bullet_enemy', 8, 8);
+        g.clear();
+        g.fillStyle(0xFFFFFF); g.fillRect(0, 0, 32, 32); g.generateTexture('white_square', 32, 32);
+        g.clear();
+        g.fillStyle(0xFF8800); g.fillRect(0, 0, 10, 10); g.generateTexture('explosion_part', 10, 10);
+
         // 1. Tiled Map Integration (USE THE MASTER MAP)
         const map = this.make.tilemap({ key: 'map' });
         const bgTileset = map.addTilesetImage('background', 'tileset_background');
@@ -43,6 +53,23 @@ export default class PvPGame extends Phaser.Scene {
         this.worldHeight = map.heightInPixels;
         this.physics.world.setBounds(0, 0, this.worldWidth, this.worldHeight);
         this.cameras.main.setBounds(0, 0, this.worldWidth, this.worldHeight);
+
+        // Zoom Setup
+        this.currentZoomIndex = 0;
+        this.uiZoomLevels = [1];
+        this.lastActiveWeapon = 'pistol';
+        this.updateBaseZoom();
+        this.applyCurrentZoom();
+
+        // Re-calculate on window resize
+        this.scale.on('resize', () => {
+            this.updateBaseZoom();
+            this.applyCurrentZoom();
+        });
+
+        this.input.keyboard.on('keydown-Z', () => this.toggleZoom());
+        this.input.keyboard.on('keydown-ESC', () => this.toggleEscMenu());
+        this.remoteGrenades = new Map();
 
         // 2. Physics Groups (Identical to Solo)
         this.weaponPickups = this.physics.add.group();
@@ -88,7 +115,7 @@ export default class PvPGame extends Phaser.Scene {
         });
 
         // 6. Collision & Overlap Logic (PVP VERSION)
-        this.physics.add.collider(this.enemies, [this.platforms, this.physicsDetails]);
+        // REMOVED collider for this.enemies with platforms to prevent kinematic friction/shaking!
         this.physics.add.collider(this.weaponPickups, [this.platforms, this.physicsDetails]);
 
         this.physics.add.collider(this.player.weapons.bullets, [this.platforms, this.physicsDetails], (b) => {
@@ -102,20 +129,57 @@ export default class PvPGame extends Phaser.Scene {
         PvPManager.gameScene = this;
         store.setShowHUD(true);
         this.matchText = this.add.text(width / 2, 20, '5:00', { font: 'bold 24px monospace', fill: '#ffffff' })
-            .setOrigin(0.5).setScrollFactor(0).setDepth(100);
+            .setOrigin(0.5).setDepth(100);
 
         this.unsubscribe = usePvPStore.subscribe((state) => {
             if (!state.isMatchStarted && state.leaderboard.length > 0) this.showResults(state.leaderboard);
+            
+            // Handle Network Player Reconnections/Dummies
+            if (this.networkPlayers) {
+                state.players.forEach(p => {
+                    if (p.id !== PvPManager.socket.id) {
+                        const existingNpArray = Array.from(this.networkPlayers.values());
+                        const np = existingNpArray.find(n => n.name === p.name);
+                        if (np) {
+                            // Update ID if they reconnected with a new socket
+                            if (np.id !== p.id) {
+                                this.networkPlayers.delete(np.id);
+                                np.id = p.id;
+                                this.networkPlayers.set(p.id, np);
+                            }
+                            // Update dummy state
+                            if (np.disconnected !== p.disconnected) {
+                                np.disconnected = p.disconnected;
+                                if (p.disconnected) {
+                                    np.visual.setExpression('dead'); // Visual indicator
+                                } else {
+                                    np.visual.setExpression('focus');
+                                }
+                            }
+                        }
+                    }
+                });
+            }
         });
 
         // Event for Network Bullets (Visual Only)
         this.player.weapons.onFire = (data) => PvPManager.sendPlayerUpdate({ event: 'fire', ...data });
         
+        // Event for Network Melee Hits (Melee Damage)
+        this.player.weapons.onMeleeHit = (data) => PvPManager.sendPlayerUpdate({ event: 'hit', targetId: data.id, damage: data.damage });
+
         // Event for Network Explosions
         this.onExplosion = (data) => PvPManager.sendPlayerUpdate({ event: 'explosion', ...data });
         
         // Event for Network Grenades
         this.onGrenade = (data) => PvPManager.sendPlayerUpdate({ event: 'grenade', ...data });
+        this.onGrenadeSync = (data) => PvPManager.sendPlayerUpdate({ event: 'grenade_sync', ...data });
+
+        // Cleanup on scene shutdown
+        this.events.on('shutdown', () => {
+            this.hideEscMenu();
+            if (this.unsubscribe) this.unsubscribe();
+        });
     }
 
     spawnNewLootAtPoint(point) {
@@ -136,8 +200,18 @@ export default class PvPGame extends Phaser.Scene {
         // Use provided lootId or generate a unique one
         pickup.lootId = lootId || (pointIndex !== -1 ? `map_${pointIndex}` : `drop_${Date.now()}_${Math.random()}`);
         
-        pickup.setDisplaySize(60, 30);
-        pickup.body.setSize(40, 20).setBounce(0.5).setDrag(100);
+        if (weaponKey === 'grenade') {
+            pickup.setDisplaySize(25, 25);
+            pickup.body.setSize(20, 20);
+        } else if (weaponKey === 'medkit') {
+            pickup.setDisplaySize(75, 40);
+            pickup.body.setSize(40, 20);
+        } else {
+            pickup.setDisplaySize(60, 30);
+            pickup.body.setSize(40, 20);
+        }
+        
+        pickup.body.setBounce(0.5).setDrag(100);
 
         if (!isPermanent) {
             const vx = syncedVx !== null ? syncedVx : Phaser.Math.Between(-150, 150);
@@ -190,17 +264,39 @@ export default class PvPGame extends Phaser.Scene {
         
         this.player.update(time, delta, pointer);
 
-        // Send state to server
-        PvPManager.sendPlayerUpdate({
-            x: this.player.sprite.x,
-            y: this.player.sprite.y,
-            vx: this.player.sprite.body.velocity.x,
-            vy: this.player.sprite.body.velocity.y,
-            aimX: worldPoint.x,
-            aimY: worldPoint.y,
-            isCrouching: this.player.isCrouching,
-            weapon: this.player.weapons.inventory[this.player.weapons.currentSlot]
-        });
+        // Track weapon change for zoom levels
+        const currentWeapon = this.player.weapons.inventory[this.player.weapons.currentSlot] || 'dagger';
+        if (currentWeapon !== this.lastActiveWeapon) {
+            this.lastActiveWeapon = currentWeapon;
+            this.onWeaponChanged(currentWeapon);
+        }
+
+        // Network Throttling (Send 20 times a second instead of 60)
+        if (!this.lastNetworkUpdate) this.lastNetworkUpdate = 0;
+        
+        if (time > this.lastNetworkUpdate + 50) {
+            this.lastNetworkUpdate = time;
+            const aimAngle = Phaser.Math.Angle.Between(this.player.sprite.x, this.player.sprite.y, worldPoint.x, worldPoint.y);
+            
+            // Filter velocities to prevent dead-reckoning prediction shaking/drifts
+            const isOnGround = this.player.sprite.body.touching.down || this.player.sprite.body.blocked.down;
+            const isBlockedHorizontal = this.player.sprite.body.blocked.left || this.player.sprite.body.blocked.right;
+            const vx = isBlockedHorizontal ? 0 : this.player.sprite.body.velocity.x;
+            const vy = isOnGround ? 0 : this.player.sprite.body.velocity.y;
+
+            // Send state to server
+            PvPManager.sendPlayerUpdate({
+                x: Math.round(this.player.sprite.x),
+                y: Math.round(this.player.sprite.y),
+                vx: vx,
+                vy: vy,
+                aimAngle: aimAngle,
+                isCrouching: this.player.isCrouching,
+                weapon: this.player.weapons.inventory[this.player.weapons.currentSlot],
+                isDead: this.player.isRespawning, // Broadcast local respawn state
+                timestamp: Date.now() // For out-of-order packet dropping
+            });
+        }
 
         // Update Remote Players
         this.networkPlayers.forEach(np => np.update(time, delta));
@@ -210,6 +306,126 @@ export default class PvPGame extends Phaser.Scene {
         const mins = Math.floor(matchTime / 60);
         const secs = matchTime % 60;
         this.matchText.setText(`${mins}:${secs.toString().padStart(2, '0')}`);
+
+        // Keep timer perfectly at the top-middle of the screen regardless of camera zoom/scroll
+        if (this.matchText && this.cameras && this.cameras.main) {
+            const cam = this.cameras.main;
+            const zoom = cam.zoom || 1;
+            this.matchText.setScale(1 / zoom);
+            const viewWidth = cam.worldView.width || this.scale.width;
+            this.matchText.setPosition(
+                cam.worldView.x + viewWidth / 2,
+                cam.worldView.y + (20 / zoom)
+            );
+        }
+    }
+
+    updateBaseZoom() {
+        const widthZoom = this.scale.width / this.worldWidth;
+        const heightZoom = this.scale.height / this.worldHeight;
+        this.baseZoom = Math.max(widthZoom, heightZoom);
+    }
+
+    applyCurrentZoom(instant = true) {
+        const uiLabel = this.uiZoomLevels[this.currentZoomIndex] || 1;
+        const targetZoom = this.baseZoom * (4 / uiLabel);
+        if (instant) {
+            this.cameras.main.setZoom(targetZoom);
+        } else {
+            this.cameras.main.zoomTo(targetZoom, 300, 'Power2');
+        }
+    }
+
+    toggleZoom() {
+        if (this.uiZoomLevels.length <= 1) return;
+        
+        this.currentZoomIndex++;
+        if (this.currentZoomIndex >= this.uiZoomLevels.length) this.currentZoomIndex = 0;
+        const uiLabel = this.uiZoomLevels[this.currentZoomIndex];
+        useGameStore.getState().setZoomLevel(uiLabel);
+        this.applyCurrentZoom(false);
+    }
+
+    getZoomLevelsForWeapon(weaponKey) {
+        if (!weaponKey) return [1];
+        const key = weaponKey.toLowerCase();
+        if (['pistol', 'dagger', 'shotgun', 'tacticalshotgun'].includes(key)) {
+            return [1];
+        }
+        if (['smg', 'rifle', 'machinegun'].includes(key)) {
+            return [1, 2];
+        }
+        if (['sniper', 'launcher'].includes(key)) {
+            return [1, 2, 4];
+        }
+        return [1];
+    }
+
+    onWeaponChanged(weaponKey) {
+        const levels = this.getZoomLevelsForWeapon(weaponKey);
+        const currentLevel = this.currentZoomIndex < this.uiZoomLevels.length ? this.uiZoomLevels[this.currentZoomIndex] : 1;
+        this.uiZoomLevels = levels;
+        
+        const newIndex = levels.indexOf(currentLevel);
+        if (newIndex !== -1) {
+            this.currentZoomIndex = newIndex;
+        } else {
+            this.currentZoomIndex = 0; // Reset to 1x
+        }
+        this.applyCurrentZoom(false);
+        useGameStore.getState().setZoomLevel(this.uiZoomLevels[this.currentZoomIndex]);
+    }
+
+    toggleEscMenu() {
+        let menu = document.getElementById('pvp-esc-menu');
+        if (menu && menu.style.display === 'flex') {
+            this.hideEscMenu();
+        } else {
+            this.showEscMenu();
+        }
+    }
+
+    showEscMenu() {
+        let menu = document.getElementById('pvp-esc-menu');
+        if (!menu) {
+            menu = document.createElement('div');
+            menu.id = 'pvp-esc-menu';
+            menu.style.cssText = `
+                position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                background: rgba(0,0,0,0.85); display: flex; flex-direction: column;
+                justify-content: center; align-items: center; z-index: 9999;
+                font-family: 'Orbitron', sans-serif; color: white;
+            `;
+            menu.innerHTML = `
+                <h1 style="font-size: 3rem; margin-bottom: 0.5rem; color: #f43f5e; text-shadow: 0 0 20px rgba(244,63,94,0.6);">MATCH IN PROGRESS</h1>
+                <p style="font-size: 1rem; margin-bottom: 2rem; color: #94a3b8;">The battle continues in the background...</p>
+                <button id="pvp-resume-btn" style="padding: 1rem 3rem; margin: 0.5rem; background: #111; border: 2px solid #22d3ee; color: #22d3ee; cursor: pointer; font-size: 1.2rem; width: 250px; font-weight: bold; transition: 0.2s;">RESUME</button>
+                <button id="pvp-menu-btn" style="padding: 1rem 3rem; margin: 0.5rem; background: #111; border: 2px solid #f43f5e; color: #f43f5e; cursor: pointer; font-size: 1.2rem; width: 250px; font-weight: bold; transition: 0.2s;">EXIT TO MENU</button>
+            `;
+            document.body.appendChild(menu);
+
+            document.getElementById('pvp-resume-btn').onclick = () => this.hideEscMenu();
+            document.getElementById('pvp-menu-btn').onclick = () => {
+                this.hideEscMenu();
+                PvPManager.disconnect();
+                this.scene.start('MainMenu');
+            };
+            
+            // Add hover effects
+            const resBtn = document.getElementById('pvp-resume-btn');
+            resBtn.onmouseenter = () => { resBtn.style.background = '#22d3ee'; resBtn.style.color = '#000'; };
+            resBtn.onmouseleave = () => { resBtn.style.background = '#111'; resBtn.style.color = '#22d3ee'; };
+
+            const menBtn = document.getElementById('pvp-menu-btn');
+            menBtn.onmouseenter = () => { menBtn.style.background = '#f43f5e'; menBtn.style.color = '#000'; };
+            menBtn.onmouseleave = () => { menBtn.style.background = '#111'; menBtn.style.color = '#f43f5e'; };
+        }
+        menu.style.display = 'flex';
+    }
+
+    hideEscMenu() {
+        const menu = document.getElementById('pvp-esc-menu');
+        if (menu) menu.style.display = 'none';
     }
 
     handleNetworkEvent(event) {
@@ -223,10 +439,37 @@ export default class PvPGame extends Phaser.Scene {
                 const wpKey = event.weapon || 'pistol';
                 const wpData = this.player.weapons.weaponData[wpKey];
                 
-                if (wpKey === 'sniper') {
+                if (wpKey === 'dagger') {
+                    if (np.visual.playMeleeAnimation) np.visual.playMeleeAnimation();
+                    this.sound.play('dagger_sound', { volume: 0.5 });
+                } else if (wpKey === 'sniper') {
                     const line = this.add.graphics();
                     line.lineStyle(2, 0xffffff, 0.8);
-                    line.lineBetween(muzzle.x, muzzle.y, event.targetX, event.targetY);
+                    
+                    const angle = Phaser.Math.Angle.Between(muzzle.x, muzzle.y, event.targetX, event.targetY);
+                    const maxRange = wpData ? wpData.range : 16000;
+                    let endX = muzzle.x + Math.cos(angle) * maxRange;
+                    let endY = muzzle.y + Math.sin(angle) * maxRange;
+                    
+                    // Raycast for local visual termination (platforms and local player)
+                    const step = 10;
+                    for (let d = 0; d < maxRange; d += step) {
+                        const px = muzzle.x + Math.cos(angle) * d;
+                        const py = muzzle.y + Math.sin(angle) * d;
+                        
+                        const hitWall = this.platforms.getTileAtWorldXY(px, py, true)?.canCollide ||
+                                        this.physicsDetails.getChildren().find(w => w.active && w.getBounds().contains(px, py));
+                        const hitLocalPlayer = this.player.sprite.active && this.player.sprite.body &&
+                                               Phaser.Geom.Rectangle.Contains(this.player.sprite.body, px, py);
+                                               
+                        if (hitWall || hitLocalPlayer) {
+                            endX = px;
+                            endY = py;
+                            break;
+                        }
+                    }
+                    
+                    line.lineBetween(muzzle.x, muzzle.y, endX, endY);
                     this.tweens.add({ targets: line, alpha: 0, duration: 150, onComplete: () => line.destroy() });
                 } else if (wpKey.includes('shotgun')) {
                     // SHOTGUN FAN SYNC (Golden Pellets like Solo)
@@ -245,9 +488,9 @@ export default class PvPGame extends Phaser.Scene {
                         b.body.setVelocity(Math.cos(angle) * 1200, Math.sin(angle) * 1200);
                         
                         // Local collision for visual destruction
-                        this.physics.add.collider(b, this.platforms, () => b.destroy());
+                        this.physics.add.collider(b, [this.platforms, this.physicsDetails], () => b.destroy());
                         this.physics.add.overlap(b, this.player.sprite, () => b.destroy());
-                        this.time.delayedCall(800, () => b.destroy());
+                         this.time.delayedCall(1500, () => b.destroy());
                     }
                 } else if (wpKey === 'launcher') {
                     // ROCKET SYNC
@@ -255,10 +498,21 @@ export default class PvPGame extends Phaser.Scene {
                     b.setDisplaySize(45, 22);
                     this.physics.add.existing(b);
                     b.body.setAllowGravity(false);
+                    b.body.setSize(10, 10);
+                    b.body.setOffset(17, 6);
                     const angle = Phaser.Math.Angle.Between(muzzle.x, muzzle.y, event.targetX, event.targetY);
                     b.body.setVelocity(Math.cos(angle) * 800, Math.sin(angle) * 800);
                     b.setRotation(angle);
-                    this.time.delayedCall(2000, () => b.destroy());
+                    
+                    // Local collision for visual destruction
+                    this.time.delayedCall(300, () => {
+                        if (b.active) {
+                            this.physics.add.collider(b, [this.platforms, this.physicsDetails], () => b.destroy());
+                        }
+                    });
+                    this.physics.add.overlap(b, this.player.sprite, () => b.destroy());
+                    
+                    this.time.delayedCall(5000, () => b.destroy());
                 } else {
                     const bullet = this.add.sprite(muzzle.x, muzzle.y, 'bullet');
                     bullet.setDisplaySize(20, 10);
@@ -269,14 +523,26 @@ export default class PvPGame extends Phaser.Scene {
                     bullet.setRotation(angle + Math.PI);
                     
                     // Local collision for visual destruction
-                    this.physics.add.collider(bullet, this.platforms, () => bullet.destroy());
+                    this.time.delayedCall(100, () => {
+                        if (bullet.active) {
+                            this.physics.add.collider(bullet, [this.platforms, this.physicsDetails], () => bullet.destroy());
+                        }
+                    });
                     this.physics.add.overlap(bullet, this.player.sprite, () => bullet.destroy());
-                    this.time.delayedCall(1000, () => bullet.destroy());
+                    this.time.delayedCall(3000, () => bullet.destroy());
                 }
             }
 
             if (event.event === 'explosion') {
                 this.player.weapons.createExplosion(event.x, event.y, event.radius, 0, null, true);
+                
+                // Clear any remote grenade nearby
+                this.remoteGrenades.forEach((g, id) => {
+                    if (Phaser.Math.Distance.Between(g.x, g.y, event.x, event.y) < 100) {
+                        g.destroy();
+                        this.remoteGrenades.delete(id);
+                    }
+                });
             }
 
             if (event.event === 'spawn_loot') {
@@ -292,6 +558,7 @@ export default class PvPGame extends Phaser.Scene {
                 const np = this.networkPlayers.get(event.id);
                 if (np && np.visual) {
                     np.isDead = true; // Lock visibility
+                    np.lastPacketTime = event.timestamp || Date.now();
                     np.visual.explode();
                 }
             }
@@ -307,21 +574,33 @@ export default class PvPGame extends Phaser.Scene {
                 this.physics.add.collider(grenade, [this.platforms, this.physicsDetails]);
                 this.physics.add.collider(grenade, this.player.sprite);
                 
+                if (event.grenadeId) {
+                    this.remoteGrenades.set(event.grenadeId, grenade);
+                }
+                
                 this.time.delayedCall(2500, () => {
                     if (grenade.active) {
                         this.player.weapons.createExplosion(grenade.x, grenade.y, 150, 0, null, true);
+                        if (event.grenadeId) this.remoteGrenades.delete(event.grenadeId);
                         grenade.destroy();
                     }
                 });
             }
 
+            if (event.event === 'grenade_sync') {
+                const g = this.remoteGrenades.get(event.grenadeId);
+                if (g && g.active) {
+                    g.setPosition(event.x, event.y);
+                }
+            }
+
             if (event.event === 'hit' && event.targetId === PvPManager.socket.id) {
-                this.player.takeDamage(event.damage);
+                this.player.takeDamage(event.damage, event.id);
             }
         }
     }
 
-    onPlayerDeath() {
+    onPlayerDeath(killerId) {
         if (this.player.isRespawning) return; // Prevent loop
         this.player.isRespawning = true; // LOCK DAMAGE LOOP
         
@@ -338,15 +617,30 @@ export default class PvPGame extends Phaser.Scene {
             weapon: currentWeapon, 
             ammo: currentAmmo,
             lootId: deathLootId,
-            vx: deathVx
+            vx: deathVx,
+            timestamp: Date.now()
         });
+
+        // Emit KILL event to server to update score
+        if (killerId && killerId !== PvPManager.socket.id) {
+            PvPManager.socket.emit('player_update', {
+                code: PvPManager.currentRoom,
+                event: 'kill',
+                killerId: killerId,
+                victimId: PvPManager.socket.id
+            });
+        }
 
         if (currentWeapon && currentWeapon !== 'dagger') {
             this.spawnWeaponPickup(this.player.sprite.x, this.player.sprite.y, currentWeapon, currentAmmo, false, -1, true, deathLootId, deathVx);
         }
         
-        this.cameras.main.fadeOut(500);
-        this.time.delayedCall(1000, () => {
+        if (this.player.visual && this.player.visual.explode) {
+            this.player.visual.explode();
+        }
+
+        this.time.delayedCall(1300, () => this.cameras.main.fadeOut(500));
+        this.time.delayedCall(2300, () => {
             const pvpStore = usePvPStore.getState();
             // Find Spawns again from the active map
             const spawnObjects = this.make.tilemap({ key: 'pvp_map' }).getObjectLayer('Spawns_And_Pickups')?.objects || [];
@@ -403,6 +697,7 @@ export default class PvPGame extends Phaser.Scene {
     }
 
     showResults(leaderboard) {
+        if (!this.cameras || !this.cameras.main) return;
         const { width, height } = this.cameras.main;
         this.add.rectangle(0, 0, width, height, 0x000000, 0.85).setOrigin(0).setScrollFactor(0).setDepth(1000);
         this.add.text(width / 2, 100, 'MATCH RESULTS', { font: 'bold 40px monospace', fill: '#22d3ee' }).setOrigin(0.5).setScrollFactor(0).setDepth(1001);

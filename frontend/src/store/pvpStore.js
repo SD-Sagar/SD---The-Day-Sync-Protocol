@@ -8,11 +8,13 @@ export const usePvPStore = create((set) => ({
     isMatchStarted: false,
     leaderboard: [],
     lootManifest: [],
+    selectedMatchTime: 300,
     
     setRoomCode: (code) => set({ roomCode: code }),
     setIsHost: (val) => set({ isHost: val }),
     setPlayers: (list) => set({ players: list }),
     setMatchTime: (time) => set({ matchTime: time }),
+    setSelectedMatchTime: (time) => set({ selectedMatchTime: time }),
     setIsMatchStarted: (val) => set({ isMatchStarted: val }),
     setLeaderboard: (data) => set({ leaderboard: data }),
     setLootManifest: (data) => set({ lootManifest: data }),
@@ -22,6 +24,7 @@ export const usePvPStore = create((set) => ({
         isHost: false,
         players: [],
         matchTime: 0,
+        selectedMatchTime: 300,
         isMatchStarted: false,
         leaderboard: [],
         lootManifest: []

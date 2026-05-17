@@ -184,7 +184,19 @@ export default class CharacterAssembler {
 
         // 2. Continuous Angle Calculation
         const angle = Phaser.Math.Angle.Between(this.container.x, this.container.y, targetX, targetY);
-        const flipFactor = this.container.scaleX < 0 ? -1 : 1;
+        this.aimWithAngle(angle);
+    }
+
+    aimWithAngle(angle) {
+        if (!this.head || !this.head.scene) return;
+
+        // Auto-flip container based on the angle (for remote replication)
+        const cos = Math.cos(angle);
+        if (cos < -0.1) {
+            this.container.setScale(-this.baseScale, this.baseScale);
+        } else if (cos > 0.1) {
+            this.container.setScale(this.baseScale, this.baseScale);
+        }
 
         // Adjust arm rotation based on flip
         if (this.container.scaleX < 0) {
