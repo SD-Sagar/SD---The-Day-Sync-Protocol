@@ -9,7 +9,7 @@ const getApiUrl = () => {
     }
     return 'http://localhost:5000';
 };
-const API_BASE = getApiUrl();
+export const API_BASE = getApiUrl();
 
 export const useGameStore = create((set) => ({
     playerHealth: 100,
