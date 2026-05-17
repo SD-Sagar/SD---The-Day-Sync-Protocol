@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useGameStore } from '../store/gameStore';
+import { useGameStore, API_BASE } from '../store/gameStore';
 
 export default function Login() {
   const [isLogin, setIsLogin] = useState(true);
@@ -17,7 +17,7 @@ export default function Login() {
     const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
 
     try {
-      const res = await fetch(`http://localhost:5000${endpoint}`, {
+      const res = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
