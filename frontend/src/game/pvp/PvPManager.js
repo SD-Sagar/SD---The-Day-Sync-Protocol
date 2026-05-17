@@ -2,7 +2,10 @@ import { io } from 'socket.io-client';
 import { usePvPStore } from '../../store/pvpStore';
 import { useGameStore } from '../../store/gameStore';
 
-const SOCKET_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const SOCKET_URL = import.meta.env.VITE_API_URL || 
+                  (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
+                      ? window.location.origin 
+                      : 'http://localhost:5000');
 
 class PvPManager {
     constructor() {
