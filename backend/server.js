@@ -38,18 +38,17 @@ app.use('/api/score', require('./routes/score'));
 const frontendDistPath = path.join(__dirname, '../frontend/dist');
 app.use(express.static(frontendDistPath));
 
-// Fallback index.html for React routing
-app.get('*', (req, res, next) => {
-    // Skip API or WebSocket requests
-    if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) {
-        return next();
+// Fallback index.html for React routing (Express 5 compatible catch-all middleware)
+app.use((req, res, next) => {
+    // Only handle GET requests that don't match API or socket.io routes
+    if (req.method === 'GET' && !req.path.startsWith('/api') && !req.path.startsWith('/socket.io')) {
+        return res.sendFile(path.join(frontendDistPath, 'index.html'), (err) => {
+            if (err) {
+                res.send('SD-Combat Backend with Sockets is running. (Frontend is not compiled yet)');
+            }
+        });
     }
-    // Serve index.html if frontend is compiled, otherwise fallback to basic string
-    res.sendFile(path.join(frontendDistPath, 'index.html'), (err) => {
-        if (err) {
-            res.send('SD-Combat Backend with Sockets is running. (Frontend is not compiled yet)');
-        }
-    });
+    next();
 });
 
 // --- PVP SOCKET LOGIC ---
