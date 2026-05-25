@@ -481,6 +481,10 @@ export default class WeaponSystem {
         this.isReloading = true;
         this.scene.sound.play('reload_sound', { volume: 0.7 });
         
+        if (this.onReload) {
+            this.onReload();
+        }
+        
         this.scene.time.delayedCall(wp.reloadTime, () => {
             const needed = wp.magSize - slotAmmo.loaded;
             const take = Math.min(needed, slotAmmo.reserve);

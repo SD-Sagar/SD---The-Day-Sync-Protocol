@@ -168,6 +168,9 @@ export default class PvPGame extends Phaser.Scene {
         // Event for Network Melee Hits (Melee Damage)
         this.player.weapons.onMeleeHit = (data) => PvPManager.sendPlayerUpdate({ event: 'hit', targetId: data.id, damage: data.damage });
 
+        // Event for Network Reloads
+        this.player.weapons.onReload = () => PvPManager.sendPlayerUpdate({ event: 'reload' });
+
         // Event for Network Explosions
         this.onExplosion = (data) => PvPManager.sendPlayerUpdate({ event: 'explosion', ...data });
         
@@ -434,14 +437,35 @@ export default class PvPGame extends Phaser.Scene {
             if (!np) return;
             np.updateData(event);
 
+            if (event.event === 'reload') {
+                if (!np.isDead) {
+                    const dist = Phaser.Math.Distance.Between(this.player.sprite.x, this.player.sprite.y, np.container.x, np.container.y);
+                    if (dist < 1680) {
+                        const falloff = 1 - (dist / 1680);
+                        const volume = Math.max(0.05, 0.7 * falloff);
+                        this.sound.play('reload_sound', { volume });
+                    }
+                }
+            }
+
             if (event.event === 'fire' && np.visual) {
                 const muzzle = np.visual.getMuzzlePosition();
                 const wpKey = event.weapon || 'pistol';
                 const wpData = this.player.weapons.weaponData[wpKey];
                 
+                // Play proximity audio for remote gunfire/melee
+                if (wpData && wpData.sound) {
+                    const dist = Phaser.Math.Distance.Between(this.player.sprite.x, this.player.sprite.y, np.container.x, np.container.y);
+                    if (dist < 1680) {
+                        const falloff = 1 - (dist / 1680);
+                        const maxVol = wpKey === 'dagger' ? 0.5 : 0.6;
+                        const volume = Math.max(0.05, maxVol * falloff);
+                        this.sound.play(wpData.sound, { volume });
+                    }
+                }
+
                 if (wpKey === 'dagger') {
                     if (np.visual.playMeleeAnimation) np.visual.playMeleeAnimation();
-                    this.sound.play('dagger_sound', { volume: 0.5 });
                 } else if (wpKey === 'sniper') {
                     const line = this.add.graphics();
                     line.lineStyle(2, 0xffffff, 0.8);
